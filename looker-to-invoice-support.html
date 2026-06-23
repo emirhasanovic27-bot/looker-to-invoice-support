@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ledger — Looker → Invoice Support File</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#070a13;
+    --panel:#0e1422;
+    --panel-2:#131b2e;
+    --raise:#18223a;
+    --line:#1f2a44;
+    --line-2:#2a3859;
+    --text:#e8edf7;
+    --muted:#8492ad;
+    --faint:#566182;
+    --green:#34d399;
+    --green-dim:#1c6b53;
+    --amber:#fbbf24;
+    --amber-dim:#7a5512;
+    --indigo:#7c83ff;
+    --indigo-2:#6366f1;
+    --red:#fb7185;
+    --cyan:#38e0d8;
+    --grid:rgba(124,131,255,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:"Space Grotesk",-apple-system,BlinkMacSystemFont,sans-serif;
+    background:
+      radial-gradient(1200px 600px at 78% -8%, rgba(99,102,241,.10), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(52,211,153,.07), transparent 55%),
+      var(--ink);
+    color:var(--text);
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+    line-height:1.5;
+  }
+  .mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+  .wrap{max-width:1240px;margin:0 auto;padding:34px 28px 80px}
+
+  /* ---------- Masthead ---------- */
+  .mast{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
+    padding-bottom:22px;border-bottom:1px solid var(--line)}
+  .brand{display:flex;flex-direction:column;gap:6px}
+  .eyebrow{font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.32em;
+    text-transform:uppercase;color:var(--indigo);font-weight:500;display:flex;align-items:center;gap:9px}
+  .eyebrow .dot{width:7px;height:7px;border-radius:50%;background:var(--green);
+    box-shadow:0 0 0 0 rgba(52,211,153,.55);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.5)}70%{box-shadow:0 0 0 7px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+  h1{font-size:38px;font-weight:700;margin:0;letter-spacing:-.02em;line-height:1.02}
+  h1 .thin{color:var(--muted);font-weight:400}
+  .tagline{color:var(--muted);font-size:14px;max-width:520px}
+  .privacy{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--faint);
+    border:1px solid var(--line);border-radius:7px;padding:7px 12px;display:flex;align-items:center;gap:8px;white-space:nowrap}
+  .privacy svg{width:13px;height:13px;stroke:var(--green)}
+
+  /* ---------- Mapping ribbon ---------- */
+  .ribbon{margin-top:26px;border:1px solid var(--line);border-radius:14px;
+    background:linear-gradient(180deg,var(--panel-2),var(--panel));overflow:hidden}
+  .ribbon-head{display:flex;align-items:center;justify-content:space-between;
+    padding:13px 18px;border-bottom:1px solid var(--line);
+    font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+  .ribbon-head .src{color:var(--cyan)}
+  .ribbon-head .dst{color:var(--green)}
+  .flow{display:grid;grid-template-columns:repeat(auto-fill,minmax(176px,1fr));gap:1px;background:var(--line)}
+  .map{background:var(--panel);padding:12px 15px;display:flex;flex-direction:column;gap:5px;transition:background .15s}
+  .map:hover{background:var(--raise)}
+  .map .from{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--faint)}
+  .map .to{font-size:13.5px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:7px}
+  .map.derived .to::after{content:"derived";font-family:"JetBrains Mono",monospace;font-size:9px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--amber);border:1px solid var(--amber-dim);
+    border-radius:4px;padding:1px 5px;font-weight:500}
+
+  /* ---------- Dropzone ---------- */
+  .stage{margin-top:22px}
+  .drop{position:relative;border:1.5px dashed var(--line-2);border-radius:16px;
+    background:linear-gradient(180deg,rgba(124,131,255,.03),transparent);
+    padding:46px 28px;text-align:center;cursor:pointer;transition:.18s;overflow:hidden;display:block}
+  .drop::before{content:"";position:absolute;inset:0;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:34px 34px;opacity:.6;pointer-events:none}
+  .drop:hover,.drop.over{border-color:var(--indigo);background:linear-gradient(180deg,rgba(124,131,255,.08),transparent)}
+  .drop.over{transform:scale(.995)}
+  .drop input{display:none}
+  .drop-inner{position:relative;display:flex;flex-direction:column;align-items:center;gap:12px}
+  .glyph{width:54px;height:54px;border-radius:13px;border:1px solid var(--line-2);
+    background:var(--raise);display:grid;place-items:center;color:var(--indigo)}
+  .glyph svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .drop h2{font-size:18px;margin:0;font-weight:600}
+  .drop h2 b{color:var(--indigo)}
+  .drop p{margin:0;color:var(--muted);font-size:13px}
+  .fname{font-family:"JetBrains Mono",monospace;font-size:12.5px;color:var(--green);
+    margin-top:14px;display:none;align-items:center;gap:8px;justify-content:center}
+  .fname.show{display:flex}
+  .errbox{margin-top:14px}
+  .alert{border-radius:10px;padding:12px 15px;font-size:13px;display:flex;gap:10px;align-items:flex-start}
+  .alert svg{width:16px;height:16px;flex-shrink:0;margin-top:1px;fill:none}
+  .alert.err{background:rgba(251,113,133,.09);border:1px solid rgba(251,113,133,.32);color:#ffa6b3}
+  .alert.err svg{stroke:var(--red)}
+  .alert.warn{background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.28);color:#fcd571}
+  .alert.warn svg{stroke:var(--amber)}
+  .alert.info{background:rgba(56,224,216,.06);border:1px solid rgba(56,224,216,.22);color:#92ece6}
+  .alert.info svg{stroke:var(--cyan)}
+
+  /* ---------- Results ---------- */
+  .result{display:none;margin-top:24px}
+  .result.show{display:block;animation:rise .5s cubic-bezier(.2,.7,.2,1)}
+  @keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+  .meters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:18px}
+  .meter{border:1px solid var(--line);border-radius:13px;background:linear-gradient(180deg,var(--panel-2),var(--panel));
+    padding:16px 18px;position:relative;overflow:hidden}
+  .meter::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--indigo)}
+  .meter.green::after{background:var(--green)} .meter.amber::after{background:var(--amber)}
+  .meter.cyan::after{background:var(--cyan)}
+  .meter .k{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  .meter .v{font-family:"JetBrains Mono",monospace;font-size:30px;font-weight:600;margin-top:7px;letter-spacing:-.02em}
+  .meter.green .v{color:var(--green)} .meter.amber .v{color:var(--amber)} .meter.cyan .v{color:var(--cyan)}
+  .meter .sub{font-size:11.5px;color:var(--faint);margin-top:3px}
+
+  .alerts-zone>*{margin-bottom:12px}
+
+  .ledger{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--panel);margin-top:4px}
+  .ledger-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    padding:13px 16px;border-bottom:1px solid var(--line);background:var(--panel-2);flex-wrap:wrap}
+  .ledger-bar .title{font-weight:600;font-size:14px;display:flex;align-items:center;gap:9px}
+  .ledger-bar .title .sq{width:9px;height:9px;border-radius:2px;background:var(--green)}
+  .controls{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+  .search{display:flex;align-items:center;gap:8px;background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 11px}
+  .search svg{width:14px;height:14px;stroke:var(--muted);fill:none}
+  .search input{background:none;border:0;outline:0;color:var(--text);font-size:13px;width:170px;font-family:"JetBrains Mono",monospace}
+  .search input::placeholder{color:var(--faint)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{background:var(--ink);border:0;color:var(--muted);font-size:12px;padding:7px 13px;cursor:pointer;
+    font-family:"JetBrains Mono",monospace;transition:.12s;border-right:1px solid var(--line)}
+  .seg button:last-child{border-right:0}
+  .seg button.on{background:var(--raise);color:var(--text)}
+  .seg button:hover:not(.on){color:var(--text)}
+
+  .btn{border:0;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;
+    font-family:"Space Grotesk",sans-serif;transition:.14s;display:inline-flex;align-items:center;gap:8px}
+  .btn svg{width:15px;height:15px;fill:none}
+  .btn-primary{background:var(--indigo-2);color:#fff;box-shadow:0 6px 20px -8px rgba(99,102,241,.7)}
+  .btn-primary:hover{background:var(--indigo);transform:translateY(-1px)}
+
+  .tbl-scroll{max-height:480px;overflow:auto}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  thead th{position:sticky;top:0;z-index:2;background:var(--panel-2);text-align:left;
+    font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
+    color:var(--muted);font-weight:500;padding:11px 13px;border-bottom:1px solid var(--line);white-space:nowrap}
+  thead th.num{text-align:right}
+  tbody td{padding:9px 13px;border-bottom:1px solid rgba(31,42,68,.5);white-space:nowrap;color:var(--text)}
+  tbody tr:hover td{background:rgba(124,131,255,.045)}
+  td.mono{font-family:"JetBrains Mono",monospace}
+  td.num{text-align:right;font-family:"JetBrains Mono",monospace}
+  td.muted{color:var(--faint)}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-family:"JetBrains Mono",monospace;font-size:11px;
+    padding:2px 8px;border-radius:5px;border:1px solid var(--line-2);background:var(--raise)}
+  .pill.team{color:var(--cyan);border-color:rgba(56,224,216,.25)}
+  .pill.pm{color:var(--indigo);border-color:rgba(124,131,255,.3)}
+  .pill.prog{color:var(--muted)}
+  .pill.green{color:var(--green);border-color:var(--green-dim)}
+  td.neg{color:var(--red)}
+  tr.backfilled td:first-child::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--cyan);margin-right:7px;vertical-align:middle;box-shadow:0 0 6px var(--cyan)}
+  tr.flagged td{background:rgba(251,191,36,.07)}
+  tr.flagged td:first-child::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--amber);margin-right:7px;vertical-align:middle;box-shadow:0 0 6px var(--amber)}
+  .need{color:var(--amber);font-family:"JetBrains Mono",monospace;font-size:11px}
+
+  .foot{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;
+    border-top:1px solid var(--line);background:var(--panel-2);font-family:"JetBrains Mono",monospace;
+    font-size:11.5px;color:var(--faint);flex-wrap:wrap;gap:10px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:7px;height:7px;border-radius:50%}
+  .legend i.c{background:var(--cyan)} .legend i.a{background:var(--amber)}
+
+  details.rules{margin-top:20px;border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden}
+  details.rules summary{cursor:pointer;padding:14px 18px;font-size:13.5px;font-weight:600;
+    list-style:none;display:flex;align-items:center;gap:10px;color:var(--text)}
+  details.rules summary::-webkit-details-marker{display:none}
+  details.rules summary .chev{transition:.2s;color:var(--indigo)}
+  details.rules[open] summary .chev{transform:rotate(90deg)}
+  .rules-body{padding:0 18px 18px;font-size:13px;color:var(--muted);border-top:1px solid var(--line)}
+  .rules-body dl{display:grid;grid-template-columns:auto 1fr;gap:9px 18px;margin:16px 0 0}
+  .rules-body dt{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--cyan);letter-spacing:.06em;white-space:nowrap}
+  .rules-body dd{margin:0}
+  .rules-body code{font-family:"JetBrains Mono",monospace;background:var(--raise);padding:1px 6px;border-radius:4px;color:var(--text);font-size:11.5px}
+
+  @media (max-width:760px){
+    h1{font-size:28px} .wrap{padding:24px 18px 60px}
+    .privacy{display:none} .search input{width:110px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="mast">
+    <div class="brand">
+      <div class="eyebrow"><span class="dot"></span> Billing Team Internal App</div>
+      <h1>Ledger<span class="thin"> / converter</span></h1>
+      <p class="tagline">Turns a Looker transaction export into the Invoice Support File layout — descriptions, team &amp; language, program mapping, and G-code backfill, all resolved in one pass.</p>
+    </div>
+    <div class="privacy">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+      Runs in-browser · nothing uploaded
+    </div>
+  </header>
+
+  <section class="ribbon" aria-label="Field mapping">
+    <div class="ribbon-head"><span class="src">Looker export</span><span>field mapping</span><span class="dst">Invoice Support File</span></div>
+    <div class="flow">
+      <div class="map"><span class="from">Trx Date</span><span class="to">DATE</span></div>
+      <div class="map"><span class="from">Ref ID</span><span class="to">TRX ID</span></div>
+      <div class="map"><span class="from">Freelancer Username</span><span class="to">USERNAME</span></div>
+      <div class="map derived"><span class="from">Trx Description</span><span class="to">DESCRIPTION</span></div>
+      <div class="map derived"><span class="from">Team + G-Code</span><span class="to">TEAM/LANGUAGE</span></div>
+      <div class="map"><span class="from">G-Code</span><span class="to">G-CODE</span></div>
+      <div class="map derived"><span class="from">Hours</span><span class="to">HOURS</span></div>
+      <div class="map"><span class="from">Bill Rate Value</span><span class="to">BILL RATE</span></div>
+      <div class="map"><span class="from">Total Billing</span><span class="to">TOTAL BILLING</span></div>
+      <div class="map derived"><span class="from">Team</span><span class="to">PROGRAM MAPPING</span></div>
+    </div>
+  </section>
+
+  <section class="stage">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".csv,text/csv">
+      <div class="drop-inner">
+        <div class="glyph"><svg viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 001 1h4"/><path d="M17 21H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/><path d="M9 13h6M9 17h6M9 9h1"/></svg></div>
+        <h2>Drop the <b>Looker CSV</b> here</h2>
+        <p>or click to browse · expects the GTNP transaction export</p>
+      </div>
+    </label>
+    <div class="fname" id="fname"></div>
+    <div class="errbox" id="err"></div>
+  </section>
+
+  <section class="result" id="result">
+    <div class="meters" id="meters"></div>
+    <div class="alerts-zone" id="alerts"></div>
+
+    <div class="ledger">
+      <div class="ledger-bar">
+        <div class="title"><span class="sq"></span> Converted ledger</div>
+        <div class="controls">
+          <div class="search">
+            <svg viewBox="0 0 24 24" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+            <input type="text" id="search" placeholder="filter username / desc / g-code">
+          </div>
+          <div class="seg" id="seg">
+            <button data-f="all" class="on">All</button>
+            <button data-f="hourly">Hourly</button>
+            <button data-f="nonhourly">Bonus/Refund</button>
+            <button data-f="flagged">Needs team</button>
+          </div>
+          <button class="btn btn-primary" id="download">
+            <svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+            Export .xlsx
+          </button>
+        </div>
+      </div>
+      <div class="tbl-scroll">
+        <table>
+          <thead><tr>
+            <th>#</th><th>DATE</th><th>TRX ID</th><th>ASSOCIATED TRX</th><th>USERNAME</th>
+            <th>DESCRIPTION</th><th>TEAM/LANGUAGE</th><th>G-CODE</th><th class="num">HOURS</th>
+            <th class="num">BILL RATE</th><th class="num">TOTAL BILLING</th><th>PROGRAM MAPPING</th>
+          </tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="foot">
+        <div class="legend">
+          <span><i class="c"></i> G-code backfilled from user's other rows</span>
+          <span><i class="a"></i> Team needs manual entry</span>
+        </div>
+        <div id="rowcount"></div>
+      </div>
+    </div>
+
+    <details class="rules">
+      <summary><span class="chev">▸</span> Conversion rules</summary>
+      <div class="rules-body">
+        <dl>
+          <dt>DESCRIPTION</dt><dd>Hourly rows become <code>Invoice for MM/DD/YYYY - MM/DD/YYYY</code> using the date range in the source; stray spacing collapsed. Bonus &amp; Refund rows keep their original (cleaned) text.</dd>
+          <dt>TEAM/LANGUAGE</dt><dd>Contains "PM" → <code>PM</code>; contains "Leads" → <code>Leads</code>; otherwise language from the G-code prefix — every <code>en*</code> code → <code>English</code>, all others per prefix (<code>ja</code>→Japanese, <code>it</code>→Italian, <code>es-419</code>→Spanish LatAm, …).</dd>
+          <dt>G-CODE backfill</dt><dd>If a row has no G-code, the converter looks at that username's other rows. If they resolve to exactly one G-code, it fills that code <em>and its bill rate</em> in. Ambiguous or never-seen users stay blank and get flagged.</dd>
+          <dt>PROGRAM MAPPING</dt><dd>Content Curation → <code>Content Cur, Multimodal, Schema</code> · 1P feedback → <code>1P Fdbk</code> · AIA feedback → <code>AIA Fdbk</code>.</dd>
+          <dt>HOURS</dt><dd><code>40:00</code> → 40 · <code>37:10</code> → 37.17 (decimal). Bonus/Refund rows carry no hours.</dd>
+          <dt>AMOUNTS</dt><dd>Currency text parsed to numbers; refund negatives preserved.</dd>
+        </dl>
+      </div>
+    </details>
+  </section>
+</div>
+
+<script>
+/* ----------------------------- logic ----------------------------- */
+const LANG={
+ 'ar':'Arabic','ca':'Catalan','zh-CN':'Chinese Simp','zh-TW':'Chinese Trad','cs':'Czech',
+ 'nl':'Dutch','fi':'Finnish','fr':'French','de':'German','iw':'Hebrew','hu':'Hungarian',
+ 'id':'Indonesian','it':'Italian','ja':'Japanese','ko':'Korean','no':'Norwegian','pl':'Polish',
+ 'pt':'Portuguese BR','ro':'Romanian','ru':'Russian','es-419':'Spanish LatAm','sv':'Swedish',
+ 'ta':'Tamil','th':'Thai','tr':'Turkish','uk':'Ukrainian','vi':'Vietnamese','kn':'Kannada','ms':'Malay'
+};
+function langFromGcode(g){
+  if(!g) return '';
+  let x=g.trim().replace(/-s$/,'').replace(/-\d+$/,'');
+  if(x.startsWith('en')) return 'English';   // en, en11, en-1-s … all English
+  return LANG[x]||'';
+}
+function teamOf(teamRaw,gcode){
+  const t=(teamRaw||'').trim();
+  if(/PM/.test(t)) return 'PM';
+  if(/Leads/.test(t)) return 'Leads';
+  return langFromGcode(gcode);
+}
+function programOf(teamRaw){
+  const t=(teamRaw||'').toLowerCase();
+  if(t.includes('content curation')) return 'Content Cur, Multimodal, Schema';
+  if(t.includes('1p feedback')) return '1P Fdbk';
+  if(t.includes('aia feedback')) return 'AIA Fdbk';
+  return '';
+}
+function money(s){
+  if(s==null) return null;
+  let x=String(s).trim().replace(/\$/g,'').replace(/,/g,'');
+  if(x==='') return null;
+  const neg=x.startsWith('-'); x=x.replace(/^-/,'');
+  const v=parseFloat(x); if(isNaN(v)) return null;
+  return neg?-v:v;
+}
+function hoursDec(s){
+  let x=String(s||'').trim();
+  const neg=x.startsWith('-'); x=x.replace(/^-/,'').trim();
+  if(!x.includes(':')) return null;
+  const [h,m]=x.split(':'); const hi=parseInt(h,10),mi=parseInt(m,10);
+  if(isNaN(hi)||isNaN(mi)) return null;
+  const v=hi+mi/60; const r=Math.round(v*100)/100; return neg?-r:r;
+}
+function cleanDesc(d){return String(d||'').replace(/\s+/g,' ').trim();}
+const DATE_RNG=/(\d{2}\/\d{2}\/\d{4})\s*-\s*(\d{2}\/\d{2}\/\d{4})\s*$/;
+
+function parseCSV(text){
+  const rows=[];let row=[],field='',q=false;
+  text=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){field+='"';i++;}else q=false;} else field+=c; }
+    else{
+      if(c==='"')q=true;
+      else if(c===','){row.push(field);field='';}
+      else if(c==='\n'){row.push(field);rows.push(row);row=[];field='';}
+      else field+=c;
+    }
+  }
+  if(field!==''||row.length){row.push(field);rows.push(row);}
+  return rows.filter(r=>r.length>1||(r.length===1&&r[0].trim()!==''));
+}
+
+const REQUIRED=['Trx Date','Ref ID','Trx Type','Trx Description','Freelancer Username','Team','G-Code','Bill Rate Value','Hours','Total Billing'];
+
+function convert(rows){
+  const head=rows[0].map(h=>h.trim());
+  const idx={}; head.forEach((h,i)=>{if(!(h in idx))idx[h]=i;});
+  const missing=REQUIRED.filter(h=>!(h in idx));
+  if(missing.length) throw new Error('Missing expected column(s): '+missing.join(', '));
+  const get=(r,h)=> idx[h]!=null ? (r[idx[h]]??'') : '';
+
+  // pass 1: username -> unique gcode (+ its bill rate)
+  const userG={}, userRate={};
+  for(let i=1;i<rows.length;i++){
+    const r=rows[i]; if(get(r,'Trx Type').trim()!=='Hourly') continue;
+    const g=get(r,'G-Code').trim(); if(!g) continue;
+    const u=get(r,'Freelancer Username').trim();
+    (userG[u]=userG[u]||new Set()).add(g);
+    userRate[u+'\u0000'+g]=get(r,'Bill Rate Value').trim();
+  }
+  const backfill={};
+  for(const u in userG){ if(userG[u].size===1){ const g=[...userG[u]][0]; backfill[u]={g,rate:userRate[u+'\u0000'+g]}; } }
+
+  // pass 2
+  const out=[];
+  for(let i=1;i<rows.length;i++){
+    const r=rows[i]; const ttype=get(r,'Trx Type').trim(); if(!ttype) continue;
+    const user=get(r,'Freelancer Username').trim();
+    const teamRaw=get(r,'Team');
+    let g=get(r,'G-Code').trim();
+    let bill=money(get(r,'Bill Rate Value'));
+    let didBackfill=false;
+    if(!g && backfill[user]){ g=backfill[user].g; if(bill==null) bill=money(backfill[user].rate); didBackfill=true; }
+    let desc=cleanDesc(get(r,'Trx Description')), hours=null;
+    if(ttype==='Hourly'){
+      const m=desc.match(DATE_RNG);
+      if(m) desc='Invoice for '+m[1]+' - '+m[2];
+      hours=hoursDec(get(r,'Hours'));
+    }
+    const team=teamOf(teamRaw,g);
+    const flag=(ttype==='Hourly'&&team==='');
+    out.push({ttype,DATE:get(r,'Trx Date').trim(),TRXID:get(r,'Ref ID').trim(),ASSOC:'',
+      USER:user,DESC:desc,TEAM:team,GCODE:g,HOURS:hours,BILL:bill,
+      TOTAL:money(get(r,'Total Billing')),PROG:programOf(teamRaw),flag,backfilled:didBackfill});
+  }
+  return out;
+}
+
+/* ----------------------------- view ----------------------------- */
+let converted=[], filterMode='all', searchTerm='';
+function fmt(v,dec){ return v==null?'':v.toLocaleString('en-US',{minimumFractionDigits:dec||0,maximumFractionDigits:2}); }
+
+function animateCount(el,target){
+  const dur=720,start=performance.now();
+  function step(t){
+    const p=Math.min(1,(t-start)/dur), e=1-Math.pow(1-p,3);
+    el.textContent=Math.round(target*e).toLocaleString('en-US');
+    if(p<1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+function teamPillClass(t){ if(t==='PM')return'pm'; if(t==='Leads')return'team'; return'green'; }
+
+function visibleRows(){
+  let list=converted;
+  if(filterMode==='hourly') list=list.filter(r=>r.ttype==='Hourly');
+  else if(filterMode==='nonhourly') list=list.filter(r=>r.ttype!=='Hourly');
+  else if(filterMode==='flagged') list=list.filter(r=>r.flag);
+  if(searchTerm){
+    const q=searchTerm.toLowerCase();
+    list=list.filter(r=>(r.USER+' '+r.DESC+' '+r.GCODE+' '+r.TEAM).toLowerCase().includes(q));
+  }
+  return list;
+}
+function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+function render(){
+  const tbody=document.getElementById('tbody');
+  const list=visibleRows(), LIM=400;
+  tbody.innerHTML='';
+  const frag=document.createDocumentFragment();
+  list.slice(0,LIM).forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    if(r.flag) tr.className='flagged'; else if(r.backfilled) tr.className='backfilled';
+    const teamCell=r.TEAM?`<span class="pill ${teamPillClass(r.TEAM)}">${esc(r.TEAM)}</span>`:`<span class="need">set team →</span>`;
+    const totClass=(r.TOTAL!=null&&r.TOTAL<0)?'num neg':'num';
+    tr.innerHTML=
+      `<td class="muted mono">${i+1}</td>`+
+      `<td class="mono">${esc(r.DATE)}</td>`+
+      `<td class="mono muted">${esc(r.TRXID)}</td>`+
+      `<td></td>`+
+      `<td class="mono">${esc(r.USER)}</td>`+
+      `<td>${esc(r.DESC)}</td>`+
+      `<td>${teamCell}</td>`+
+      `<td class="mono">${esc(r.GCODE)}${r.backfilled?' <span class="muted">·bf</span>':''}</td>`+
+      `<td class="num">${r.HOURS==null?'':fmt(r.HOURS,2)}</td>`+
+      `<td class="num">${r.BILL==null?'':fmt(r.BILL,2)}</td>`+
+      `<td class="${totClass}">${r.TOTAL==null?'':fmt(r.TOTAL,2)}</td>`+
+      `<td><span class="pill prog">${esc(r.PROG||'—')}</span></td>`;
+    frag.appendChild(tr);
+  });
+  tbody.appendChild(frag);
+  document.getElementById('rowcount').textContent=
+    `${Math.min(list.length,LIM)} / ${list.length} shown`+(list.length>LIM?' · export for full set':'');
+}
+
+function showResult(){
+  const total=converted.length;
+  const hourly=converted.filter(r=>r.ttype==='Hourly').length;
+  const nonh=total-hourly;
+  const bf=converted.filter(r=>r.backfilled).length;
+  const flagged=converted.filter(r=>r.flag).length;
+  const teams=new Set(converted.filter(r=>r.TEAM).map(r=>r.TEAM)).size;
+
+  document.getElementById('meters').innerHTML=
+    `<div class="meter"><div class="k">Rows converted</div><div class="v" data-c="${total}">0</div><div class="sub">${hourly} hourly · ${nonh} bonus/refund</div></div>`+
+    `<div class="meter cyan"><div class="k">Teams / languages</div><div class="v" data-c="${teams}">0</div><div class="sub">resolved from G-code</div></div>`+
+    `<div class="meter green"><div class="k">G-codes backfilled</div><div class="v" data-c="${bf}">0</div><div class="sub">from each user's other rows</div></div>`+
+    `<div class="meter ${flagged?'amber':'green'}"><div class="k">Need manual team</div><div class="v" data-c="${flagged}">0</div><div class="sub">${flagged?'highlighted below':'all rows resolved'}</div></div>`;
+  document.querySelectorAll('#meters .v').forEach(el=>animateCount(el,+el.dataset.c));
+
+  const alerts=document.getElementById('alerts'); alerts.innerHTML='';
+  if(bf) alerts.innerHTML+=`<div class="alert info"><svg viewBox="0 0 24 24" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg><div><b>${bf}</b> row(s) had a missing G-code — filled from the same user's other transactions (unique match), with the matching bill rate. Marked with a cyan dot.</div></div>`;
+  if(nonh) alerts.innerHTML+=`<div class="alert info"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg><div><b>${nonh}</b> Bonus/Refund row(s) carried over with original text and no hours — they don't follow the hourly invoice pattern.</div></div>`;
+  if(flagged) alerts.innerHTML+=`<div class="alert warn"><svg viewBox="0 0 24 24" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3L13.7 4a2 2 0 00-3.4 0z"/></svg><div><b>${flagged}</b> Analyst row(s) couldn't resolve a team (no G-code anywhere for that user). Filter to <b>Needs team</b> and fill them in.</div></div>`;
+
+  document.getElementById('result').classList.add('show');
+  render();
+}
+
+function buildWorkbook(){
+  const header=['DATE','TRX ID','ASSOCIATED TRX','USERNAME','DESCRIPTION','TEAM/LANGUAGE','G-CODE','HOURS','BILL RATE','TOTAL BILLING','PROGRAM MAPPING'];
+  const aoa=[header];
+  converted.forEach(r=>aoa.push([
+    r.DATE, r.TRXID?(Number(r.TRXID)||r.TRXID):'', r.ASSOC, r.USER, r.DESC,
+    r.TEAM, r.GCODE, r.HOURS==null?'':r.HOURS, r.BILL==null?'':r.BILL,
+    r.TOTAL==null?'':r.TOTAL, r.PROG
+  ]));
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols']=[{wch:12},{wch:12},{wch:14},{wch:16},{wch:34},{wch:15},{wch:10},{wch:8},{wch:10},{wch:14},{wch:30}];
+  const range=XLSX.utils.decode_range(ws['!ref']);
+  for(let R=1;R<=range.e.r;R++){
+    const bill=ws[XLSX.utils.encode_cell({r:R,c:8})];
+    const tot=ws[XLSX.utils.encode_cell({r:R,c:9})];
+    const hrs=ws[XLSX.utils.encode_cell({r:R,c:7})];
+    if(bill&&typeof bill.v==='number') bill.z='0.00';
+    if(tot&&typeof tot.v==='number') tot.z='#,##0.00';
+    if(hrs&&typeof hrs.v==='number') hrs.z='0.00';
+  }
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Support File');
+  return wb;
+}
+
+/* ----------------------------- wiring ----------------------------- */
+const fileInput=document.getElementById('file');
+const drop=document.getElementById('drop');
+const errBox=document.getElementById('err');
+const fnameEl=document.getElementById('fname');
+
+function handleFile(file){
+  errBox.innerHTML='';
+  fnameEl.classList.add('show');
+  fnameEl.innerHTML=`<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#34d399" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> ${esc(file.name)}`;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const rows=parseCSV(e.target.result);
+      if(!rows.length) throw new Error('That file looks empty.');
+      converted=convert(rows);
+      if(!converted.length) throw new Error('No data rows found beneath the header.');
+      showResult();
+    }catch(ex){
+      document.getElementById('result').classList.remove('show');
+      errBox.innerHTML=`<div class="alert err"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg><div>${esc(ex.message)}</div></div>`;
+    }
+  };
+  reader.readAsText(file);
+}
+fileInput.addEventListener('change',e=>{if(e.target.files[0])handleFile(e.target.files[0]);});
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)handleFile(f);});
+
+document.getElementById('seg').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#seg button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); filterMode=b.dataset.f; render();
+});
+document.getElementById('search').addEventListener('input',e=>{searchTerm=e.target.value;render();});
+document.getElementById('download').addEventListener('click',()=>{
+  const wb=buildWorkbook();
+  const today=new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb,`Invoice_Support_File_converted_${today}.xlsx`);
+});
+</script>
+</body>
+</html>
