@@ -391,10 +391,12 @@ function convert(rows){
   for(const u in userG){ if(userG[u].size===1){ const g=[...userG[u]][0]; backfill[u]={g,rate:userRate[u+'\u0000'+g]}; } }
 
   // pass 2
+  const EXCLUDE=new Set(['noudb','nsemana']);
   const out=[];
   for(let i=1;i<rows.length;i++){
     const r=rows[i]; const ttype=get(r,'Trx Type').trim(); if(!ttype) continue;
     const user=get(r,'Freelancer Username').trim();
+    if(EXCLUDE.has(user.toLowerCase())) continue;
     const teamRaw=get(r,'Team');
     let g=get(r,'G-Code').trim();
     let bill=money(get(r,'Bill Rate Value'));
