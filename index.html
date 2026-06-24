@@ -295,9 +295,10 @@
         <dl>
           <dt>DESCRIPTION</dt><dd>Hourly rows become <code>Invoice for MM/DD/YYYY - MM/DD/YYYY</code> using the date range in the source; stray spacing collapsed. Bonus &amp; Refund rows keep their original (cleaned) text.</dd>
           <dt>TEAM/LANGUAGE</dt><dd>Contains "PM" → <code>PM</code>; contains "Leads" → <code>Leads</code>; otherwise language from the G-code prefix — every <code>en*</code> code → <code>English</code>, all others per prefix (<code>ja</code>→Japanese, <code>it</code>→Italian, <code>es-419</code>→Spanish LatAm, …).</dd>
-          <dt>G-CODE backfill</dt><dd>If a row has no G-code, the converter looks at that username's other rows. If they resolve to exactly one G-code, it fills that code <em>and its bill rate</em> in. Ambiguous or never-seen users stay blank and get flagged.</dd>
+          <dt>G-CODE backfill</dt><dd>If a row has no G-code, the converter first checks whether the username has a single unique G-code elsewhere and uses it. Otherwise it derives the rate as <code>Total Billing ÷ Hours</code> and matches it to that user's known bill rates — recovering the exact G-code and rate (e.g. <code>72.60 ÷ 10 = 7.26</code> → that user's <code>en-1-s</code> row). The matched code and rate are filled in. Rows that still can't resolve get flagged.</dd>
           <dt>PROGRAM MAPPING</dt><dd>Content Curation → <code>Content Cur, Multimodal, Schema</code> · 1P feedback → <code>1P Fdbk</code> · AIA feedback → <code>AIA Fdbk</code>.</dd>
-          <dt>HOURS</dt><dd><code>40:00</code> → 40 · <code>37:10</code> → 37.17 (decimal). Bonus/Refund rows carry no hours.</dd>
+          <dt>HOURS</dt><dd><code>40:00</code> → 40 · <code>37:10</code> → 37.17 (decimal). Negative source hours are made positive. Bonus/Refund rows carry no hours.</dd>
+          <dt>USERNAME</dt><dd>Always written as plain text — numeric-looking handles like <code>026779</code> keep their leading zeros and never become numbers.</dd>
           <dt>AMOUNTS</dt><dd>Currency text parsed to numbers; refund negatives preserved.</dd>
         </dl>
       </div>
@@ -343,11 +344,18 @@ function money(s){
 }
 function hoursDec(s){
   let x=String(s||'').trim();
-  const neg=x.startsWith('-'); x=x.replace(/^-/,'').trim();
+  x=x.replace(/^-/,'').trim();           // always positive in Invoice Support File
   if(!x.includes(':')) return null;
   const [h,m]=x.split(':'); const hi=parseInt(h,10),mi=parseInt(m,10);
   if(isNaN(hi)||isNaN(mi)) return null;
-  const v=hi+mi/60; const r=Math.round(v*100)/100; return neg?-r:r;
+  return Math.round((hi+mi/60)*100)/100;
+}
+function hoursExact(s){                   // full precision (no 2dp rounding) for rate math
+  let x=String(s||'').trim().replace(/^-/,'').trim();
+  if(!x.includes(':')) return null;
+  const [h,m]=x.split(':'); const hi=parseInt(h,10),mi=parseInt(m,10);
+  if(isNaN(hi)||isNaN(mi)) return null;
+  return hi+mi/60;
 }
 function cleanDesc(d){return String(d||'').replace(/\s+/g,' ').trim();}
 const DATE_RNG=/(\d{2}\/\d{2}\/\d{4})\s*-\s*(\d{2}\/\d{2}\/\d{4})\s*$/;
@@ -378,15 +386,19 @@ function convert(rows){
   if(missing.length) throw new Error('Missing expected column(s): '+missing.join(', '));
   const get=(r,h)=> idx[h]!=null ? (r[idx[h]]??'') : '';
 
-  // pass 1: username -> unique gcode (+ its bill rate)
-  const userG={}, userRate={};
+  // pass 1: username -> unique gcode (+ its bill rate); also rate->gcode map per user
+  const userG={}, userRate={}, userRateToG={};
   for(let i=1;i<rows.length;i++){
     const r=rows[i]; if(get(r,'Trx Type').trim()!=='Hourly') continue;
     const g=get(r,'G-Code').trim(); if(!g) continue;
     const u=get(r,'Freelancer Username').trim();
     (userG[u]=userG[u]||new Set()).add(g);
-    userRate[u+'\u0000'+g]=get(r,'Bill Rate Value').trim();
+    const br=get(r,'Bill Rate Value').trim();
+    userRate[u+'\u0000'+g]=br;
+    const brn=money(br);
+    if(brn!=null){ (userRateToG[u]=userRateToG[u]||{})[brn.toFixed(2)]={g,rate:brn}; }
   }
+  // strict: user has exactly one exact G-code -> backfill code + rate
   const backfill={};
   for(const u in userG){ if(userG[u].size===1){ const g=[...userG[u]][0]; backfill[u]={g,rate:userRate[u+'\u0000'+g]}; } }
 
@@ -400,8 +412,30 @@ function convert(rows){
     const teamRaw=get(r,'Team');
     let g=get(r,'G-Code').trim();
     let bill=money(get(r,'Bill Rate Value'));
+    const totVal=money(get(r,'Total Billing'));
     let didBackfill=false;
-    if(!g && backfill[user]){ g=backfill[user].g; if(bill==null) bill=money(backfill[user].rate); didBackfill=true; }
+    if(!g){
+      // (a) strict: user has a single unique G-code -> use it + its rate
+      if(backfill[user]){ g=backfill[user].g; if(bill==null) bill=money(backfill[user].rate); didBackfill=true; }
+      // (b) derived-rate match: Total Billing / Hours ≈ a known bill rate for this user -> that rate's G-code
+      else if(ttype==='Hourly' && totVal!=null && userRateToG[user]){
+        const hExact=hoursExact(get(r,'Hours'));   // full precision, no rounding
+        if(hExact && hExact!==0){
+          const derived=Math.abs(totVal)/hExact;
+          // exact 2dp key first, then nearest known rate within a small tolerance
+          let hit=userRateToG[user][derived.toFixed(2)];
+          if(!hit){
+            let best=null,bestDiff=0.03;   // tolerate rounding noise up to ~3 cents
+            for(const k in userRateToG[user]){
+              const d=Math.abs(parseFloat(k)-derived);
+              if(d<bestDiff){bestDiff=d;best=userRateToG[user][k];}
+            }
+            hit=best;
+          }
+          if(hit){ g=hit.g; if(bill==null) bill=hit.rate; didBackfill=true; }
+        }
+      }
+    }
     let desc=cleanDesc(get(r,'Trx Description')), hours=null;
     if(ttype==='Hourly'){
       const m=desc.match(DATE_RNG);
@@ -412,7 +446,7 @@ function convert(rows){
     const flag=(ttype==='Hourly'&&team==='');
     out.push({ttype,DATE:get(r,'Trx Date').trim(),TRXID:get(r,'Ref ID').trim(),ASSOC:'',
       USER:user,DESC:desc,TEAM:team,GCODE:g,HOURS:hours,BILL:bill,
-      TOTAL:money(get(r,'Total Billing')),PROG:programOf(teamRaw),flag,backfilled:didBackfill});
+      TOTAL:totVal,PROG:programOf(teamRaw),flag,backfilled:didBackfill});
   }
   return out;
 }
@@ -511,6 +545,12 @@ function buildWorkbook(){
   ws['!cols']=[{wch:12},{wch:12},{wch:14},{wch:16},{wch:34},{wch:15},{wch:10},{wch:8},{wch:10},{wch:14},{wch:30}];
   const range=XLSX.utils.decode_range(ws['!ref']);
   for(let R=1;R<=range.e.r;R++){
+    // Force USERNAME (col D=3) and G-CODE (col G=6) to be stored as plain text,
+    // so values like 026779 keep their leading zero and never become numbers / sci-notation.
+    [3,6].forEach(c=>{
+      const cell=ws[XLSX.utils.encode_cell({r:R,c})];
+      if(cell && cell.v!=null && cell.v!==''){ cell.t='s'; cell.v=String(cell.v); cell.z='@'; delete cell.w; }
+    });
     const bill=ws[XLSX.utils.encode_cell({r:R,c:8})];
     const tot=ws[XLSX.utils.encode_cell({r:R,c:9})];
     const hrs=ws[XLSX.utils.encode_cell({r:R,c:7})];
