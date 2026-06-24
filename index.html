@@ -171,6 +171,9 @@
   tr.backfilled td:first-child::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
     background:var(--cyan);margin-right:7px;vertical-align:middle;box-shadow:0 0 6px var(--cyan)}
   tr.flagged td{background:rgba(251,191,36,.07)}
+  tr.feerow td{background:rgba(124,131,255,.06)}
+  tr.feerow td:first-child::before{content:"";display:inline-block;width:6px;height:6px;border-radius:2px;
+    background:var(--indigo);margin-right:7px;vertical-align:middle;box-shadow:0 0 6px var(--indigo)}
   tr.flagged td:first-child::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
     background:var(--amber);margin-right:7px;vertical-align:middle;box-shadow:0 0 6px var(--amber)}
   .need{color:var(--amber);font-family:"JetBrains Mono",monospace;font-size:11px}
@@ -262,6 +265,7 @@
             <button data-f="all" class="on">All</button>
             <button data-f="hourly">Hourly</button>
             <button data-f="nonhourly">Bonus/Refund</button>
+            <button data-f="fees">Fees</button>
             <button data-f="flagged">Needs team</button>
           </div>
           <button class="btn btn-primary" id="download">
@@ -299,6 +303,7 @@
           <dt>PROGRAM MAPPING</dt><dd>Content Curation → <code>Content Cur, Multimodal, Schema</code> · 1P feedback → <code>1P Fdbk</code> · AIA feedback → <code>AIA Fdbk</code>.</dd>
           <dt>HOURS</dt><dd><code>40:00</code> → 40 · <code>37:10</code> → 37.17 (decimal). Negative source hours are made positive. Bonus/Refund rows carry no hours.</dd>
           <dt>USERNAME</dt><dd>Always written as plain text — numeric-looking handles like <code>026779</code> keep their leading zeros and never become numbers.</dd>
+          <dt>FEES</dt><dd>The monthly <code>odesk_managed</code> fees are recognised by their fixed Total Billing amount and rewritten: description becomes <code>Google Cloud Platform expense - MONTH YEAR</code> or <code>Google Workspace Partner Domain - MONTH YEAR</code> (month from the row's DATE), TEAM <code>GTNP SC</code>, G-code <code>YL-0</code>, no hours/rate, program by amount (152→1P, 47→AIA, 206→Content Cur, etc.). A flat <code>$10,000.00</code> row titled <code>Month Year Monthly Engagement Fee</code> is appended using the same date.</dd>
           <dt>AMOUNTS</dt><dd>Currency text parsed to numbers; refund negatives preserved.</dd>
         </dl>
       </div>
@@ -360,6 +365,37 @@ function hoursExact(s){                   // full precision (no 2dp rounding) fo
 function cleanDesc(d){return String(d||'').replace(/\s+/g,' ').trim();}
 const DATE_RNG=/(\d{2}\/\d{2}\/\d{4})\s*-\s*(\d{2}\/\d{2}\/\d{4})\s*$/;
 
+/* --- Fee handling ---------------------------------------------------------
+   The Looker export carries the GCP / Workspace fees as generic
+   "Upwork Managed Services - Bonus" odesk_managed rows. Their real meaning is
+   encoded ONLY in the Total Billing amount, so we key everything off the amount.
+   These totals are fixed each month. */
+const FEE_BY_AMOUNT={
+  152:   {desc:'Google Cloud Platform expense',     prog:'1P Fdbk'},
+  8254:  {desc:'Google Workspace Partner Domain',   prog:'1P Fdbk'},
+  47:    {desc:'Google Cloud Platform expense',     prog:'AIA Fdbk'},
+  2531:  {desc:'Google Workspace Partner Domain',   prog:'AIA Fdbk'},
+  206:   {desc:'Google Cloud Platform expense',     prog:'Content Cur, Multimodal, Schema'},
+  11215: {desc:'Google Workspace Partner Domain',   prog:'Content Cur, Multimodal, Schema'}
+};
+const ENGAGEMENT_FEE_AMOUNT=10000;
+const ENGAGEMENT_FEE_PROG='Content Cur, Multimodal, Schema';
+const MONTHS=['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'];
+function monthYearFromDate(d){
+  // accepts 2026-06-08 or 06/08/2026 etc -> "JUNE 2026"
+  if(!d) return '';
+  let y,m;
+  let s=String(d).trim();
+  let iso=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  let us=s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if(iso){ y=+iso[1]; m=+iso[2]; }
+  else if(us){ y=+us[3]; m=+us[1]; }
+  else return '';
+  if(m<1||m>12) return '';
+  return MONTHS[m-1]+' '+y;
+}
+function titleMonthYear(d){ const s=monthYearFromDate(d); if(!s) return ''; const [mo,yr]=s.split(' '); return mo.charAt(0)+mo.slice(1).toLowerCase()+' '+yr; }
+
 function parseCSV(text){
   const rows=[];let row=[],field='',q=false;
   text=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
@@ -405,14 +441,34 @@ function convert(rows){
   // pass 2
   const EXCLUDE=new Set(['noudb','nsemana']);
   const out=[];
+  let feeDate='', feeCount=0, engagementAdded=false;
   for(let i=1;i<rows.length;i++){
     const r=rows[i]; const ttype=get(r,'Trx Type').trim(); if(!ttype) continue;
     const user=get(r,'Freelancer Username').trim();
     if(EXCLUDE.has(user.toLowerCase())) continue;
     const teamRaw=get(r,'Team');
+
+    // --- Fee rows: odesk_managed whose Total (integer part) matches a known fixed fee amount ---
+    const totRaw=money(get(r,'Total Billing'));
+    const totInt=totRaw!=null?Math.trunc(totRaw):null;   // drop cents: 8254.91 -> 8254
+    const isFee = user.toLowerCase()==='odesk_managed' && totInt!=null &&
+                  Object.prototype.hasOwnProperty.call(FEE_BY_AMOUNT, totInt);
+    if(isFee){
+      const amt=totInt;
+      const fee=FEE_BY_AMOUNT[amt];
+      const dt=get(r,'Trx Date').trim();
+      if(!feeDate) feeDate=dt;
+      feeCount++;
+      out.push({ttype,DATE:dt,TRXID:get(r,'Ref ID').trim(),ASSOC:'',
+        USER:'odesk_managed',DESC:fee.desc+' - '+monthYearFromDate(dt),
+        TEAM:'GTNP SC',GCODE:'YL-0',HOURS:null,BILL:null,
+        TOTAL:amt,PROG:fee.prog,flag:false,backfilled:false,isFee:true});
+      continue;
+    }
+
     let g=get(r,'G-Code').trim();
     let bill=money(get(r,'Bill Rate Value'));
-    const totVal=money(get(r,'Total Billing'));
+    const totVal=totRaw;
     let didBackfill=false;
     if(!g){
       // (a) strict: user has a single unique G-code -> use it + its rate
@@ -448,6 +504,15 @@ function convert(rows){
       USER:user,DESC:desc,TEAM:team,GCODE:g,HOURS:hours,BILL:bill,
       TOTAL:totVal,PROG:programOf(teamRaw),flag,backfilled:didBackfill});
   }
+
+  // Add the flat $10,000 Monthly Engagement Fee (not present in the Looker export).
+  // Only added when the file actually contains the monthly fees, using their date.
+  if(feeCount>0 && feeDate){
+    out.push({ttype:'Bonus',DATE:feeDate,TRXID:'',ASSOC:'',
+      USER:'odesk_managed',DESC:titleMonthYear(feeDate)+' Monthly Engagement Fee',
+      TEAM:'GTNP SC',GCODE:'YL-0',HOURS:null,BILL:null,
+      TOTAL:ENGAGEMENT_FEE_AMOUNT,PROG:ENGAGEMENT_FEE_PROG,flag:false,backfilled:false,isFee:true});
+  }
   return out;
 }
 
@@ -469,7 +534,8 @@ function teamPillClass(t){ if(t==='PM')return'pm'; if(t==='Leads')return'team'; 
 function visibleRows(){
   let list=converted;
   if(filterMode==='hourly') list=list.filter(r=>r.ttype==='Hourly');
-  else if(filterMode==='nonhourly') list=list.filter(r=>r.ttype!=='Hourly');
+  else if(filterMode==='nonhourly') list=list.filter(r=>r.ttype!=='Hourly' && !r.isFee);
+  else if(filterMode==='fees') list=list.filter(r=>r.isFee);
   else if(filterMode==='flagged') list=list.filter(r=>r.flag);
   if(searchTerm){
     const q=searchTerm.toLowerCase();
@@ -486,7 +552,7 @@ function render(){
   const frag=document.createDocumentFragment();
   list.slice(0,LIM).forEach((r,i)=>{
     const tr=document.createElement('tr');
-    if(r.flag) tr.className='flagged'; else if(r.backfilled) tr.className='backfilled';
+    if(r.flag) tr.className='flagged'; else if(r.isFee) tr.className='feerow'; else if(r.backfilled) tr.className='backfilled';
     const teamCell=r.TEAM?`<span class="pill ${teamPillClass(r.TEAM)}">${esc(r.TEAM)}</span>`:`<span class="need">set team →</span>`;
     const totClass=(r.TOTAL!=null&&r.TOTAL<0)?'num neg':'num';
     tr.innerHTML=
@@ -512,20 +578,24 @@ function render(){
 function showResult(){
   const total=converted.length;
   const hourly=converted.filter(r=>r.ttype==='Hourly').length;
-  const nonh=total-hourly;
+  const feeRows=converted.filter(r=>r.isFee);
+  const fees=feeRows.length;
+  const nonh=total-hourly-fees;
   const bf=converted.filter(r=>r.backfilled).length;
   const flagged=converted.filter(r=>r.flag).length;
-  const teams=new Set(converted.filter(r=>r.TEAM).map(r=>r.TEAM)).size;
+  const teams=new Set(converted.filter(r=>r.TEAM && !r.isFee).map(r=>r.TEAM)).size;
+  const feeTotal=feeRows.reduce((s,r)=>s+(r.TOTAL||0),0);
 
   document.getElementById('meters').innerHTML=
-    `<div class="meter"><div class="k">Rows converted</div><div class="v" data-c="${total}">0</div><div class="sub">${hourly} hourly · ${nonh} bonus/refund</div></div>`+
+    `<div class="meter"><div class="k">Rows converted</div><div class="v" data-c="${total}">0</div><div class="sub">${hourly} hourly · ${nonh} bonus/refund · ${fees} fees</div></div>`+
     `<div class="meter cyan"><div class="k">Teams / languages</div><div class="v" data-c="${teams}">0</div><div class="sub">resolved from G-code</div></div>`+
     `<div class="meter green"><div class="k">G-codes backfilled</div><div class="v" data-c="${bf}">0</div><div class="sub">from each user's other rows</div></div>`+
     `<div class="meter ${flagged?'amber':'green'}"><div class="k">Need manual team</div><div class="v" data-c="${flagged}">0</div><div class="sub">${flagged?'highlighted below':'all rows resolved'}</div></div>`;
   document.querySelectorAll('#meters .v').forEach(el=>animateCount(el,+el.dataset.c));
 
   const alerts=document.getElementById('alerts'); alerts.innerHTML='';
-  if(bf) alerts.innerHTML+=`<div class="alert info"><svg viewBox="0 0 24 24" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg><div><b>${bf}</b> row(s) had a missing G-code — filled from the same user's other transactions (unique match), with the matching bill rate. Marked with a cyan dot.</div></div>`;
+  if(fees) alerts.innerHTML+=`<div class="alert info"><svg viewBox="0 0 24 24" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/></svg><div><b>${fees}</b> monthly fee row(s) standardised by amount (incl. the $10,000 engagement fee), totalling <b>$${feeTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</b>. Filter to <b>Fees</b> to review.</div></div>`;
+  if(bf) alerts.innerHTML+=`<div class="alert info"><svg viewBox="0 0 24 24" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg><div><b>${bf}</b> row(s) had a missing G-code — filled from the same user's other transactions, with the matching bill rate. Marked with a cyan dot.</div></div>`;
   if(nonh) alerts.innerHTML+=`<div class="alert info"><svg viewBox="0 0 24 24" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg><div><b>${nonh}</b> Bonus/Refund row(s) carried over with original text and no hours — they don't follow the hourly invoice pattern.</div></div>`;
   if(flagged) alerts.innerHTML+=`<div class="alert warn"><svg viewBox="0 0 24 24" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3L13.7 4a2 2 0 00-3.4 0z"/></svg><div><b>${flagged}</b> Analyst row(s) couldn't resolve a team (no G-code anywhere for that user). Filter to <b>Needs team</b> and fill them in.</div></div>`;
 
